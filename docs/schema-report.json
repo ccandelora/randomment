@@ -1,0 +1,68 @@
+{
+  "timestamp": "2025-12-07T17:30:57.321Z",
+  "tables": [
+    {
+      "name": "moments",
+      "columns": []
+    },
+    {
+      "name": "profiles",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "username",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "display_name",
+          "type": "unknown",
+          "nullable": true
+        },
+        {
+          "name": "bio",
+          "type": "unknown",
+          "nullable": true
+        },
+        {
+          "name": "avatar_url",
+          "type": "unknown",
+          "nullable": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "name": "moment_reactions",
+      "columns": []
+    },
+    {
+      "name": "moment_reports",
+      "columns": []
+    },
+    {
+      "name": "blocks",
+      "columns": []
+    },
+    {
+      "name": "device_tokens",
+      "columns": []
+    }
+  ],
+  "views": {
+    "feed_moments": true
+  }
+}

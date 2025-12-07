@@ -18,6 +18,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack/lib/typescript/src/types';
 import { RootStackParamList } from '../types';
@@ -25,15 +26,18 @@ import { useProfile } from '../context/ProfileContext';
 import { useAuth } from '../context/AuthContext';
 import { useMoments } from '../context/MomentsContext';
 import { useNotifications } from '../context/NotificationContext';
+import { useStats } from '../hooks/useStats';
 
 type ProfileNavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 export function ProfileScreen() {
+  const insets = useSafeAreaInsets();
   const navigation = useNavigation<ProfileNavigationProp>();
   const { profile, isLoading, error, updateProfile } = useProfile();
   const { user, signOut } = useAuth();
   const { moments } = useMoments();
   const { showSuccess, showError } = useNotifications();
+  const { stats, isLoading: statsLoading } = useStats();
   const [isEditing, setIsEditing] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [bio, setBio] = useState('');
@@ -74,16 +78,22 @@ export function ProfileScreen() {
       });
 
       if (updateError) {
-        showError('Failed to update profile. Please try again.');
+        // Show more specific error message
+        const errorMessage = updateError.message || 'Failed to update profile. Please try again.';
+        showError(errorMessage);
+        if (__DEV__) {
+          console.error('ProfileScreen handleSave error:', updateError);
+        }
         return;
       }
 
       setIsEditing(false);
       showSuccess('Profile updated successfully!');
     } catch (err) {
-      showError('An unexpected error occurred. Please try again.');
+      const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred. Please try again.';
+      showError(errorMessage);
       if (__DEV__) {
-        console.error('Profile update error:', err);
+        console.error('ProfileScreen handleSave exception:', err);
       }
     } finally {
       setIsSaving(false);
@@ -150,7 +160,10 @@ export function ProfileScreen() {
     >
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: Math.max(insets.top + 20, 32) },
+        ]}
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.content}>
@@ -159,11 +172,19 @@ export function ProfileScreen() {
             <Text style={styles.title}>Profile</Text>
             <View style={styles.headerButtons}>
               {!isEditing && (
-                <TouchableOpacity onPress={handleEdit} style={styles.editButton}>
-                  <Text style={styles.editButtonText}>Edit</Text>
+                <TouchableOpacity 
+                  onPress={handleEdit} 
+                  style={styles.editButton}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Text style={styles.editButtonIcon}>✏️</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity onPress={handleSettingsPress} style={styles.settingsButton}>
+              <TouchableOpacity 
+                onPress={handleSettingsPress} 
+                style={styles.settingsButton}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
                 <Text style={styles.settingsButtonText}>⚙️</Text>
               </TouchableOpacity>
             </View>
@@ -227,12 +248,54 @@ export function ProfileScreen() {
           {/* Stats */}
           <View style={styles.section}>
             <Text style={styles.label}>Stats</Text>
-            <View style={styles.statsContainer}>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{moments.length}</Text>
-                <Text style={styles.statLabel}>Moments</Text>
+            
+            {statsLoading ? (
+              <View style={styles.statsLoading}>
+                <ActivityIndicator size="small" color="#007AFF" />
               </View>
-            </View>
+            ) : stats ? (
+              <View style={styles.statsContainer}>
+                {/* Total Moments */}
+                <View style={styles.statItem}>
+                  <Text style={styles.statValue}>{stats.totalMoments}</Text>
+                  <Text style={styles.statLabel}>Total Moments</Text>
+                </View>
+                
+                {/* Current Streak */}
+                <View style={styles.statItem}>
+                  <Text style={[styles.statValue, stats.currentStreak > 0 && styles.statValueStreak]}>
+                    {stats.currentStreak}
+                  </Text>
+                  <Text style={styles.statLabel}>
+                    {stats.currentStreak === 1 ? 'Day' : 'Days'} Streak
+                    {stats.currentStreak > 0 && (
+                      <Text style={styles.statSubtext}> 🔥</Text>
+                    )}
+                  </Text>
+                </View>
+                
+                {/* This Week */}
+                <View style={styles.statItem}>
+                  <Text style={styles.statValue}>{stats.momentsThisWeek}</Text>
+                  <Text style={styles.statLabel}>This Week</Text>
+                </View>
+                
+                {/* Longest Streak */}
+                {stats.longestStreak > 0 && stats.longestStreak !== stats.currentStreak && (
+                  <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.longestStreak}</Text>
+                    <Text style={styles.statLabel}>Best Streak</Text>
+                  </View>
+                )}
+              </View>
+            ) : (
+              <View style={styles.statsContainer}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statValue}>0</Text>
+                  <Text style={styles.statLabel}>No stats yet</Text>
+                </View>
+              </View>
+            )}
           </View>
 
           {/* Edit Actions */}
@@ -338,32 +401,41 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 32,
+    paddingHorizontal: 4, // Add small padding for better alignment
   },
   title: {
     color: '#FFFFFF',
     fontSize: 32,
     fontWeight: '700',
+    flex: 1, // Allow title to take available space
   },
   headerButtons: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 16, // Increased gap between buttons
   },
   editButton: {
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 8,
+    minWidth: 44, // Minimum touch target size
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  editButtonText: {
-    color: '#007AFF',
-    fontSize: 16,
-    fontWeight: '600',
+  editButtonIcon: {
+    fontSize: 22,
   },
   settingsButton: {
     paddingVertical: 8,
     paddingHorizontal: 8,
+    minWidth: 44, // Minimum touch target size
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   settingsButtonText: {
-    fontSize: 20,
+    fontSize: 22,
+    color: '#CCCCCC',
   },
   settingsLinkButton: {
     flexDirection: 'row',
@@ -450,6 +522,17 @@ const styles = StyleSheet.create({
   statLabel: {
     color: '#CCCCCC',
     fontSize: 14,
+  },
+  statSubtext: {
+    color: '#FF9500',
+    fontSize: 14,
+  },
+  statValueStreak: {
+    color: '#FF9500',
+  },
+  statsLoading: {
+    paddingVertical: 16,
+    alignItems: 'center',
   },
   actionButtons: {
     flexDirection: 'row',

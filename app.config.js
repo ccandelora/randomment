@@ -6,7 +6,7 @@
 module.exports = {
   expo: {
     name: 'Moment Roulette',
-    slug: 'moment-roulette',
+    slug: 'randommoment',
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/icon.png',
@@ -65,11 +65,8 @@ module.exports = {
     extra: {
       supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
       supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-      // Expo projectId for push notifications (optional - auto-detected in Expo Go)
-      // Get your projectId from: https://expo.dev/accounts/[your-account]/projects/[your-project]
-      // Or run: npx expo whoami and check your project settings
       eas: {
-        projectId: process.env.EXPO_PROJECT_ID,
+        projectId: 'cf4fb2ec-d76b-48f4-83b0-78a93b34bef1',
       },
     },
   },

@@ -208,12 +208,44 @@ export async function createMomentRecord(
 /**
  * Gets the public URL for a storage path
  *
- * @param storagePath - Path to the file in storage
+ * @param storagePath - Path to the file in storage (e.g., "moments/userId/filename.mp4")
  * @returns Public URL for the file
  */
 export function getMomentPublicUrl(storagePath: string): string {
-  const { data } = supabase.storage.from('moments').getPublicUrl(storagePath);
-  return data.publicUrl;
+  // Always manually construct URL to ensure correct format
+  // Supabase client's getPublicUrl() sometimes returns malformed URLs
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  
+  if (!supabaseUrl) {
+    logError('getMomentPublicUrl: EXPO_PUBLIC_SUPABASE_URL not set');
+    throw new Error('Supabase URL not configured');
+  }
+  
+  // Ensure supabaseUrl doesn't have trailing slash
+  const baseUrl = supabaseUrl.replace(/\/$/, '');
+  
+  // Construct URL: https://[project].supabase.co/storage/v1/object/public/[bucket]/[path]
+  // storagePath already includes "moments/userId/filename.mp4"
+  const publicUrl = `${baseUrl}/storage/v1/object/public/moments/${storagePath}`;
+  
+  if (__DEV__) {
+    console.log('getMomentPublicUrl:', { 
+      storagePath, 
+      supabaseUrl: baseUrl,
+      publicUrl,
+    });
+    
+    // Also try Supabase client's method for comparison
+    const { data } = supabase.storage.from('moments').getPublicUrl(storagePath);
+    if (data.publicUrl !== publicUrl) {
+      console.warn('getMomentPublicUrl: Supabase client URL differs:', {
+        clientUrl: data.publicUrl,
+        manualUrl: publicUrl,
+      });
+    }
+  }
+  
+  return publicUrl;
 }
 
 /**
@@ -315,10 +347,38 @@ export async function fetchFeedMoments(
           continue; // Skip invalid rows
         }
 
+        // Ensure video_url is valid - always regenerate from storage_path for reliability
+        let videoUrl: string;
+        if (sanitized.storage_path) {
+          // Always use getMomentPublicUrl to ensure correct URL format
+          // The view's video_url might be incorrect if app.supabase_url setting is missing
+          videoUrl = getMomentPublicUrl(sanitized.storage_path);
+          if (__DEV__) {
+            // Log if view's URL differs from generated URL
+            if (sanitized.video_url && sanitized.video_url !== videoUrl) {
+              console.warn('Feed moment video_url mismatch:', {
+                momentId: sanitized.id,
+                viewUrl: sanitized.video_url,
+                generatedUrl: videoUrl,
+                storagePath: sanitized.storage_path,
+              });
+            } else {
+              console.log('Feed moment video URL:', {
+                momentId: sanitized.id,
+                url: videoUrl,
+                storagePath: sanitized.storage_path,
+              });
+            }
+          }
+        } else {
+          logError('Feed moment missing storage_path:', sanitized);
+          continue; // Skip moments without storage_path
+        }
+
         feedMoments.push({
           id: sanitized.id,
           storage_path: sanitized.storage_path,
-          video_url: sanitized.video_url, // Use video_url directly from the view
+          video_url: videoUrl, // Use validated/generated URL
           description: sanitized.description ?? null,
           created_at: sanitized.created_at,
           user_id: sanitized.user_id,

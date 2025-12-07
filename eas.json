@@ -19,8 +19,7 @@
     "preview": {
       "distribution": "internal",
       "ios": {
-        "simulator": false,
-        "bundleIdentifier": "com.momentroulette.app"
+        "simulator": false
       },
       "android": {
         "buildType": "apk"
@@ -32,8 +31,7 @@
     "production": {
       "autoIncrement": true,
       "ios": {
-        "simulator": false,
-        "bundleIdentifier": "com.momentroulette.app"
+        "simulator": false
       },
       "android": {
         "buildType": "app-bundle"

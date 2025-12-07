@@ -1,16 +1,16 @@
 /**
  * Push Notifications Hook
  * 
- * Manages push notification registration for authenticated users.
+ * Minimal development-stage push notification setup using expo-notifications.
  * 
  * Features:
  * - Requests notification permissions
- * - Retrieves Expo push token
- * - Detects platform (iOS/Android)
- * - Registers device token in Supabase device_tokens table
+ * - Gets Expo push token
+ * - Handles permission denial gracefully
+ * - Upserts device token to Supabase device_tokens table
+ * - Safe for React strict mode (prevents duplicate registrations)
  * 
- * Only runs for authenticated users. Automatically registers device
- * when user is authenticated and has a profile.
+ * Only runs when user is authenticated and profile onboarding is complete.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -18,12 +18,10 @@ import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
-import { upsertDeviceToken, Platform as DevicePlatform } from '../services/deviceTokens';
-import { logError } from '../utils/errorHandling';
+import { upsertDeviceToken } from '../services/deviceTokens';
 
 /**
  * Configure notification handler behavior
- * This determines how notifications are handled when app is in foreground
  */
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -36,8 +34,7 @@ Notifications.setNotificationHandler({
 interface UsePushNotificationsReturn {
   pushToken: string | null;
   isLoading: boolean;
-  error: Error | null;
-  requestPermissions: () => Promise<boolean>;
+  error: string | null;
 }
 
 /**
@@ -45,47 +42,91 @@ interface UsePushNotificationsReturn {
  * 
  * Automatically registers device token when:
  * - User is authenticated
- * - User has a profile (onboarding complete)
+ * - User has completed profile onboarding
  * - Notification permissions are granted
  * 
- * @returns Object with pushToken, isLoading, error, and requestPermissions function
+ * Safe for React strict mode - uses ref to prevent duplicate registrations.
+ * 
+ * @returns Object with pushToken, isLoading, and error
  */
 export function usePushNotifications(): UsePushNotificationsReturn {
   const { user } = useAuth();
   const { profile } = useProfile();
   const [pushToken, setPushToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const isRegisteringRef = useRef(false); // Prevent duplicate registrations
+  const [error, setError] = useState<string | null>(null);
+  
+  // Prevent duplicate registrations (React strict mode safety)
+  const isRegisteringRef = useRef(false);
+  const lastUserIdRef = useRef<string | null>(null);
+  const lastTokenRef = useRef<string | null>(null);
 
   /**
-   * Detects platform and returns 'ios' or 'android'
-   */
-  const getPlatform = useCallback((): DevicePlatform => {
-    return Platform.OS === 'ios' ? 'ios' : 'android';
-  }, []);
-
-  /**
-   * Requests notification permissions from the user
-   * @returns true if permissions granted, false otherwise
+   * Requests notification permissions
+   * @returns true if granted, false otherwise
    */
   const requestPermissions = useCallback(async (): Promise<boolean> => {
     try {
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-
-      // Only ask if permissions haven't already been determined
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
+      
+      if (existingStatus === 'granted') {
+        return true;
       }
 
-      return finalStatus === 'granted';
+      const { status } = await Notifications.requestPermissionsAsync();
+      return status === 'granted';
     } catch (err) {
-      const error = err instanceof Error ? err : new Error('Failed to request notification permissions');
-      setError(error);
-      logError('Failed to request notification permissions', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to request permissions';
+      if (__DEV__) {
+        console.error('Push notification permission error:', errorMessage);
+      }
       return false;
+    }
+  }, []);
+
+  /**
+   * Gets Expo push token
+   */
+  const getExpoPushToken = useCallback(async (): Promise<string | null> => {
+    try {
+      // Try to get projectId from Constants (for development builds)
+      let projectId: string | undefined;
+      try {
+        const Constants = require('expo-constants').default;
+        projectId = 
+          Constants.expoConfig?.extra?.eas?.projectId || 
+          Constants.expoConfig?.extra?.projectId ||
+          Constants.manifest?.extra?.eas?.projectId;
+      } catch {
+        // Constants not available - Expo will auto-detect projectId in Expo Go
+      }
+
+      // In development, projectId is optional (Expo Go auto-detects it)
+      // Only pass projectId if we have it, otherwise let Expo auto-detect
+      const tokenData = await Notifications.getExpoPushTokenAsync(
+        projectId ? { projectId } : undefined
+      );
+      
+      return tokenData.data || null;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to get push token';
+      
+      // In development, projectId errors are expected in some environments
+      // Don't treat this as a fatal error - push notifications will work in production builds
+      if (__DEV__) {
+        if (errorMessage.includes('projectId') || errorMessage.includes('No "projectId"')) {
+          console.warn(
+            '⚠️ Push notifications require a projectId in some environments.\n' +
+            'This is expected in bare workflow or some development setups.\n' +
+            'Push notifications will work in Expo Go and production builds.\n' +
+            'To fix: Add EXPO_PROJECT_ID to your .env file or set it in app.config.js'
+          );
+        } else {
+          console.error('Expo push token error:', errorMessage);
+        }
+      }
+      
+      return null;
     }
   }, []);
 
@@ -93,13 +134,26 @@ export function usePushNotifications(): UsePushNotificationsReturn {
    * Registers device token with Supabase
    */
   const registerDeviceToken = useCallback(async () => {
+    // Only register for authenticated users with profiles
     if (!user || !profile) {
-      // Only register for authenticated users with profiles
+      setPushToken(null);
+      setError(null);
       return;
     }
 
-    // Prevent duplicate registrations
+    // Prevent duplicate registrations (React strict mode safety)
     if (isRegisteringRef.current) {
+      if (__DEV__) {
+        console.log('Registration already in progress, skipping...');
+      }
+      return;
+    }
+
+    // Skip if we already registered this token for this user
+    if (lastUserIdRef.current === user.id && lastTokenRef.current) {
+      if (__DEV__) {
+        console.log('Token already registered for this user, skipping...');
+      }
       return;
     }
 
@@ -111,96 +165,74 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       // Step 1: Request permissions
       const hasPermission = await requestPermissions();
       if (!hasPermission) {
-        setError(new Error('Notification permissions not granted'));
+        setError('Notification permissions not granted');
         setIsLoading(false);
+        isRegisteringRef.current = false;
         return;
       }
 
       // Step 2: Get Expo push token
-      // Note: In Expo Go, projectId is automatically detected from app.json/app.config.js
-      // For development builds, we need to get it from Constants
-      let projectId: string | undefined;
-      
-      try {
-        // Try to get projectId from Constants (works in Expo Go and development builds)
-        const Constants = require('expo-constants').default;
-        projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.expoConfig?.extra?.projectId;
-      } catch (err) {
-        // Constants might not be available, that's okay
-        if (__DEV__) {
-          console.warn('Could not get projectId from Constants:', err);
-        }
-      }
-
-      // Only include projectId if we have it, otherwise let Expo auto-detect
-      const tokenData = await Notifications.getExpoPushTokenAsync(
-        projectId ? { projectId } : undefined
-      );
-      const token = tokenData.data;
-
+      const token = await getExpoPushToken();
       if (!token) {
-        throw new Error('Failed to get Expo push token');
+        setError('Failed to get push token');
+        setIsLoading(false);
+        isRegisteringRef.current = false;
+        return;
       }
 
       // Step 3: Detect platform
-      const platform = getPlatform();
+      const platform = Platform.OS === 'ios' ? 'ios' : 'android';
 
       // Step 4: Upsert device token in Supabase
+      // Upsert on (user_id, token) prevents duplicates
       await upsertDeviceToken({
         userId: user.id,
         platform,
         token,
       });
 
+      // Success - store token and clear error
       setPushToken(token);
       setError(null);
+      lastUserIdRef.current = user.id;
+      lastTokenRef.current = token;
 
       if (__DEV__) {
-        console.log(`Push notification token registered: ${token.substring(0, 20)}...`);
+        console.log(`✅ Push token registered: ${token.substring(0, 20)}...`);
       }
     } catch (err) {
-      const error = err instanceof Error ? err : new Error('Failed to register push notifications');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to register push notifications';
+      setError(errorMessage);
       
-      // Handle projectId error gracefully - this is expected in Expo Go
-      if (error.message.includes('projectId') || error.message.includes('No "projectId"')) {
-        if (__DEV__) {
-          console.warn(
-            'Push notifications require a projectId. ' +
-            'This is expected in Expo Go - push notifications work in development builds. ' +
-            'To enable in Expo Go, add your Expo projectId to app.config.js extra.eas.projectId'
-          );
-        }
-        // Don't set error state for projectId issues - it's not critical for development
-        setError(null);
-      } else {
-        setError(error);
-        logError('Failed to register push notifications', err);
+      if (__DEV__) {
+        console.error('Push notification registration error:', errorMessage);
       }
     } finally {
       setIsLoading(false);
       isRegisteringRef.current = false;
     }
-  }, [user, profile, requestPermissions, getPlatform]);
+  }, [user, profile, requestPermissions, getExpoPushToken]);
 
   /**
    * Auto-register when user is authenticated and has profile
+   * Only runs when both conditions are met and not loading
    */
   useEffect(() => {
+    // Wait for auth/profile to finish loading
     if (user && profile) {
-      // User is fully onboarded, register device token
       registerDeviceToken();
     } else {
-      // User not authenticated or no profile, clear token
+      // Clear state when user logs out or profile is missing
       setPushToken(null);
       setError(null);
+      lastUserIdRef.current = null;
+      lastTokenRef.current = null;
     }
-  }, [user, profile, registerDeviceToken]);
+  }, [user?.id, profile?.id, registerDeviceToken]); // Use IDs to avoid unnecessary re-runs
 
   return {
     pushToken,
     isLoading,
     error,
-    requestPermissions,
   };
 }
-

@@ -19,6 +19,7 @@ import {
   TextInput,
 } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMoments } from '../context/MomentsContext';
 import { useAuth } from '../context/AuthContext';
 import { useNotifications } from '../context/NotificationContext';
@@ -88,6 +89,7 @@ function MomentCard({ item, onLikeToggle, onReport, onBlock }: MomentCardProps) 
   const [localHasLiked, setLocalHasLiked] = useState(item.hasLiked || false);
   const [localLikeCount, setLocalLikeCount] = useState(item.likeCount || 0);
   const [showMenu, setShowMenu] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   // Sync with prop changes (e.g., after refresh)
   React.useEffect(() => {
@@ -142,15 +144,51 @@ function MomentCard({ item, onLikeToggle, onReport, onBlock }: MomentCardProps) 
     <View style={styles.card}>
       {/* Video Player */}
       <View style={styles.videoWrapper}>
-        <Video
-          ref={videoRef}
-          source={{ uri: item.uri }}
-          style={styles.video}
-          resizeMode={ResizeMode.COVER}
-          useNativeControls
-          shouldPlay={false}
-          isLooping
-        />
+        {videoError ? (
+          <View style={styles.videoErrorContainer}>
+            <Text style={styles.videoErrorText}>⚠️ Video unavailable</Text>
+            {__DEV__ && (
+              <Text style={styles.videoErrorDebug}>{videoError}</Text>
+            )}
+          </View>
+        ) : (
+          <Video
+            ref={videoRef}
+            source={{ uri: item.uri }}
+            style={styles.video}
+            resizeMode={ResizeMode.COVER}
+            useNativeControls
+            shouldPlay={false}
+            isLooping
+            onError={(error: any) => {
+              const errorMessage = error?.nativeEvent?.error?.message || error?.message || String(error);
+              if (__DEV__) {
+                console.error('Video playback error:', {
+                  momentId: item.id,
+                  uri: item.uri,
+                  error: errorMessage,
+                  fullError: error,
+                });
+              }
+              setVideoError(`Failed to load video: ${item.uri?.substring(0, 50)}...`);
+            }}
+            onLoadStart={() => {
+              if (__DEV__) {
+                console.log('Video loading:', { 
+                  momentId: item.id, 
+                  uri: item.uri,
+                  storagePath: (item as any).storage_path,
+                });
+              }
+            }}
+            onLoad={() => {
+              if (__DEV__) {
+                console.log('Video loaded successfully:', { momentId: item.id });
+              }
+              setVideoError(null);
+            }}
+          />
+        )}
       </View>
 
       {/* Content */}
@@ -234,6 +272,7 @@ function MomentCard({ item, onLikeToggle, onReport, onBlock }: MomentCardProps) 
 }
 
 export function FeedScreen() {
+  const insets = useSafeAreaInsets();
   const { moments: localMoments } = useMoments(); // Local moments for optimistic updates (temporary until server sync)
   const { user } = useAuth();
   const { showError: showNotificationError, showSuccess } = useNotifications();
@@ -257,7 +296,16 @@ export function FeedScreen() {
     likeCount?: number;
     hasLiked?: boolean;
     userId?: string;
+    storage_path?: string; // Include for debugging
   } => {
+    if (__DEV__) {
+      console.log('Converting feed moment:', {
+        id: feedMoment.id,
+        video_url: feedMoment.video_url,
+        storage_path: feedMoment.storage_path,
+        username: feedMoment.username,
+      });
+    }
     return {
       id: feedMoment.id,
       uri: feedMoment.video_url, // Already converted from storage_path to public URL
@@ -268,6 +316,7 @@ export function FeedScreen() {
       likeCount: feedMoment.like_count,
       hasLiked: feedMoment.has_liked,
       userId: feedMoment.user_id,
+      storage_path: feedMoment.storage_path, // Include for debugging
     };
   }, []);
 
@@ -394,9 +443,9 @@ export function FeedScreen() {
 
     try {
       await toggleLike(momentId, user.id);
-      // Refresh feed to get updated like counts from feed_moments view
-      // Optimistic update in MomentCard handles immediate UI feedback
-      await loadMoments(true);
+      // Don't refresh immediately - optimistic update in MomentCard handles UI feedback
+      // Refresh will happen on next pull-to-refresh or when user navigates back to feed
+      // This prevents the moment from disappearing due to race conditions
     } catch (error) {
       // Error is handled by optimistic update revert in MomentCard
       // Show error notification
@@ -530,7 +579,10 @@ export function FeedScreen() {
           />
         )}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingTop: Math.max(insets.top + 16, 24) },
+        ]}
         showsVerticalScrollIndicator={false}
         initialNumToRender={3}
         maxToRenderPerBatch={3}
@@ -636,8 +688,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
   },
   listContent: {
-    padding: 16,
+    paddingHorizontal: 16,
     paddingBottom: 32,
+    // paddingTop is set dynamically based on safe area insets
   },
   card: {
     backgroundColor: '#1A1A1A',
@@ -662,6 +715,27 @@ const styles = StyleSheet.create({
   video: {
     width: '100%',
     height: '100%',
+  },
+  videoErrorContainer: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#1A1A1A',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  videoErrorText: {
+    color: '#FF3B30',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  videoErrorDebug: {
+    color: '#666666',
+    fontSize: 12,
+    textAlign: 'center',
+    fontFamily: 'monospace',
   },
   cardContent: {
     padding: 16,

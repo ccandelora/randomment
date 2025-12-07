@@ -36,8 +36,8 @@ export interface UpsertDeviceTokenPayload {
  * - This function assumes payload.userId equals the authenticated user's ID
  * - RLS will reject if user_id doesn't match auth.uid()
  * 
- * Uses PostgreSQL UPSERT (ON CONFLICT) to update existing token or insert new one.
- * Conflict is on (user_id, platform) - one token per user per platform.
+ * Prevents duplicate tokens by checking if (user_id, token) already exists.
+ * Updates existing record or inserts new one.
  * 
  * @param payload - Device token data (user_id must match authenticated user)
  * @returns Promise resolving to the upserted device token record
@@ -47,24 +47,51 @@ export async function upsertDeviceToken(
   payload: UpsertDeviceTokenPayload
 ): Promise<DeviceToken> {
   try {
-    // RLS: INSERT/UPDATE policy checks that user_id = auth.uid()
-    // If payload.userId doesn't match the authenticated user, RLS will reject
-    const { data, error } = await supabase
+    // Check if token already exists for this user
+    const { data: existing, error: checkError } = await supabase
       .from('device_tokens')
-      .upsert(
-        {
-          user_id: payload.userId, // Must equal auth.uid() for RLS to allow
-          platform: payload.platform,
-          token: payload.token,
-          is_active: true,
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: 'user_id,platform', // Update if (user_id, platform) already exists
-        }
-      )
-      .select()
-      .single();
+      .select('id')
+      .eq('user_id', payload.userId)
+      .eq('token', payload.token)
+      .maybeSingle();
+
+    if (checkError && __DEV__) {
+      console.warn('Error checking for existing token:', checkError.message);
+    }
+
+    const tokenData = {
+      user_id: payload.userId, // Must equal auth.uid() for RLS to allow
+      platform: payload.platform,
+      token: payload.token,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    };
+
+    let data: DeviceToken | null = null;
+    let error: any = null;
+
+    if (existing) {
+      // Update existing token
+      const result = await supabase
+        .from('device_tokens')
+        .update(tokenData)
+        .eq('id', existing.id)
+        .select()
+        .single();
+      
+      data = result.data as DeviceToken | null;
+      error = result.error;
+    } else {
+      // Insert new token
+      const result = await supabase
+        .from('device_tokens')
+        .insert(tokenData)
+        .select()
+        .single();
+      
+      data = result.data as DeviceToken | null;
+      error = result.error;
+    }
 
     if (error) {
       if (__DEV__) {

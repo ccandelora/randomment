@@ -115,10 +115,39 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
   const updateProfile = useCallback(async (updates: { display_name?: string | null; bio?: string | null }) => {
     if (!user) {
-      return { error: new Error('User not authenticated') };
+      const error = new Error('User not authenticated');
+      if (__DEV__) {
+        console.error('updateProfile: User not authenticated');
+      }
+      return { error };
     }
 
     try {
+      // Debug: Check authentication before update
+      const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+      if (authError || !authUser) {
+        const error = new Error(`Authentication error: ${authError?.message || 'No authenticated user'}`);
+        if (__DEV__) {
+          console.error('updateProfile: Auth check failed:', { authError, authUser, userId: user.id });
+        }
+        return { error };
+      }
+
+      if (user.id !== authUser.id) {
+        const error = new Error(`User ID mismatch: context user ${user.id} != auth user ${authUser.id}`);
+        if (__DEV__) {
+          console.error('updateProfile: User ID mismatch:', { contextUserId: user.id, authUserId: authUser.id });
+        }
+        return { error };
+      }
+
+      if (__DEV__) {
+        console.log('updateProfile: Updating profile:', {
+          userId: user.id,
+          updates,
+        });
+      }
+
       // RLS: UPDATE policy requires id = auth.uid()
       // Filtering by .eq('id', user.id) ensures we only update own profile
       // RLS will reject if user.id doesn't match auth.uid()
@@ -134,22 +163,61 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
         .single();
 
       if (updateError) {
+        if (__DEV__) {
+          console.error('updateProfile: Supabase update error:', {
+            error: updateError,
+            code: updateError.code,
+            message: updateError.message,
+            details: updateError.details,
+            hint: updateError.hint,
+            userId: user.id,
+            updates,
+          });
+        }
         throw updateError;
       }
 
-      // Update local state
-      if (data) {
-        setProfile(data as Profile);
+      if (!data) {
+        const error = new Error('Update succeeded but no data returned');
+        if (__DEV__) {
+          console.error('updateProfile: No data returned');
+        }
+        throw error;
+      }
+
+      // Validate updated data
+      const validation = validateProfile(data);
+      if (!validation.isValid) {
+        logValidationErrors('updateProfile', validation.errors, data);
+        // Use sanitized data if possible
+        if (validation.sanitized.id && validation.sanitized.username) {
+          setProfile(validation.sanitized as Profile);
+        } else {
+          // If validation fails, refresh from server
+          await fetchProfile();
+        }
+      } else {
+        setProfile(validation.sanitized as Profile);
+      }
+
+      if (__DEV__) {
+        console.log('updateProfile: Successfully updated profile:', data);
       }
 
       return { error: null };
     } catch (err) {
-      const error = err instanceof Error ? err : new Error('Failed to update profile');
+      const error = err instanceof Error ? err : new Error(`Failed to update profile: ${err instanceof Error ? err.message : String(err)}`);
       setError(error);
-      console.error('Profile update error:', error);
+      if (__DEV__) {
+        console.error('updateProfile: Exception caught:', {
+          error,
+          originalError: err,
+          userId: user?.id,
+        });
+      }
       return { error };
     }
-  }, [user]);
+  }, [user, fetchProfile]);
 
   const value: ProfileContextValue = {
     profile,

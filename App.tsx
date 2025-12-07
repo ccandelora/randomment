@@ -15,6 +15,7 @@ import { storePendingNavigation, getAndClearPendingNavigation } from './src/util
 import { useAuth } from './src/context/AuthContext';
 import { useProfile } from './src/context/ProfileContext';
 import { logDatabaseDiagnostics } from './src/utils/databaseDiagnostics';
+import { useAppActivation } from './src/hooks/useAppActivation';
 
 /**
  * Global error handler for unhandled errors
@@ -163,6 +164,21 @@ function NotificationResponseHandler() {
   return null; // This component doesn't render anything
 }
 
+/**
+ * Component that tracks app activation and schedules moment windows
+ * Must be inside AuthProvider and ProfileProvider to access auth state
+ */
+function AppActivationTracker() {
+  // Track app activation and schedule moment windows via Edge Function
+  useAppActivation({
+    enabled: true,
+    minDelaySeconds: 30,
+    maxDelaySeconds: 120,
+  });
+
+  return null; // This component doesn't render anything
+}
+
 export default function App() {
   useEffect(() => {
     setupGlobalErrorHandlers();
@@ -188,6 +204,7 @@ export default function App() {
             <MomentsProvider>
               <NavigationContainer ref={navigationRef}>
                 <MomentWindowProvider>
+                  <AppActivationTracker />
                   <RootNavigator />
                   <NotificationResponseHandler />
                   <StatusBar style="light" />
